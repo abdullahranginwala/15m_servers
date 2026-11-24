@@ -18,11 +18,18 @@ looking for it.
 
 ## What it does today
 
-It opens `/dev/net/tun`, attaches to `tun0`, and prints every packet the kernel hands
-it as hex. That's the whole program. It's 37 lines and 12 of them are error handling.
+It opens `/dev/net/tun`, attaches to `tun0`, and reads every packet the kernel hands
+it. Then it tells you what it saw:
 
-It does not reply. It does not parse. It is, strictly speaking, a very attentive
-`/dev/null`.
+- IPv6 header: source, destination, next protocol, hop limit, payload length
+- TCP header: ports, seq, ack, header length, flags, window
+- TCP checksum, recomputed over the pseudo-header and segment, so a healthy packet
+  prints zero
+
+IPv4 gets turned away at the door. So does anything that isn't TCP.
+
+It still does not reply. It has graduated from a very attentive `/dev/null` to a
+very judgmental one.
 
 ## Running it
 
@@ -33,31 +40,35 @@ go build -o tunservers .
 sudo ./tunservers
 ```
 
-In a second terminal, bring the interface up and give it sixteen million addresses
-to worry about:
+In a second terminal, bring the interface up and give it a /64, which is 18 quintillion
+addresses to worry about. 15 million of them should be enough for now.
 
 ```sh
 sudo ip link set tun0 up
-sudo ip route add 10.0.0.0/8 dev tun0
+sudo ip -6 addr add fd00::1/64 dev tun0
 ```
 
-Now ping any of them:
+`fd00::1` is you. Every other address in there is a server that doesn't exist yet.
+Go talk to one:
 
 ```sh
-ping 10.42.0.69
+curl 'http://[fd00::2]/'
 ```
 
-The first terminal fills up with something like:
+The first terminal prints something like:
 
 ```
 attached to tun0, fd: 3
-84 bytes: 45000054a1b240004001...
-84 bytes: 45000054a2110000400...
+fd00::1 -> fd00::2 proto=6 hop=64 payload=40
+  tcp 51234 -> 80 seq=2891374650 ack=0 hdr=40 flags=0x2 win=64800
+  checksum verify=0x00
 ```
 
-`45` is IPv4 with a 20 byte header, `0054` is 84 bytes total, and somewhere in there is
-an ICMP echo request that will never get its echo. Ping reports 100% packet loss. This
-is correct behaviour.
+`flags=0x2` is a SYN: curl knocking. Nobody answers, so the kernel knocks again, a bit
+more slowly each time, and eventually curl gives up. This is correct behaviour.
+
+You will probably also see the kernel's own ICMPv6 chatter show up as
+`protocol not tcp mate`. That one's not a bug either.
 
 The interface disappears when the program exits, so the route goes with it. No cleanup
 needed, which is the nicest thing I can say about the current design.
@@ -65,8 +76,10 @@ needed, which is the nicest thing I can say about the current design.
 ## The plan
 
 - [x] Read raw packets off a TUN device
-- [ ] Parse the IP header instead of squinting at hex
-- [ ] Answer a ping, so at least one thing on this network has manners
+- [x] Parse the IPv6 header instead of squinting at hex
+- [x] Parse the TCP header
+- [x] Verify the TCP checksum
+- [ ] Write a packet back. Any packet.
 - [ ] TCP handshake, by hand, in userspace (this is the part where it stops being cute)
 - [ ] Reply `OK` to an HTTP request
 - [ ] Do that for one address
@@ -76,7 +89,7 @@ needed, which is the nicest thing I can say about the current design.
 ## Things I already know will hurt
 
 - TCP is a state machine with opinions, and I have to hold all of them myself.
-- Checksums.
+- Checksums. Verifying one turned out fine. Now I have to produce them.
 - "Idle servers are free" stops being true the moment someone connects to all of them.
 
 ## Credit
